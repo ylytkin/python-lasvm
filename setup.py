@@ -5,7 +5,7 @@ with open('requirements.txt') as file:
 
 setup(
     name='python-lasvm',
-    version='0.1',
+    version='0.2',
     description='A Python implementation of the LaSVM online learning algorithm.',
     url='https://github.com/ylytkin/python-lasvm',
     author='Yura Lytkin',
