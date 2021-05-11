@@ -45,6 +45,9 @@ class BaseKernelMethod:
 
         return y_pred
 
+    def score(self, x: np.ndarray, y: np.ndarray) -> float:
+        return (self.predict(x) == y).mean()
+
     @property
     def coef_(self) -> np.ndarray:
         if self.kernel != 'linear':

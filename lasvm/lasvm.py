@@ -1,9 +1,8 @@
-from typing import List, Union, Tuple, Optional, Dict
+from typing import List, Union, Tuple, Optional
 
 import numpy as np
 from tqdm import tqdm
 
-from lasvm.utils import cumulative_mean
 from lasvm.base_kernel_method import BaseKernelMethod
 
 __all__ = [
@@ -15,6 +14,9 @@ class LaSVM(BaseKernelMethod):
     """The LaSVM online learning algorithm for binary classification
     as described here:
     https://leon.bottou.org/papers/bordes-ertekin-weston-bottou-2005
+
+    Note that some positive and negative samples are needed to
+    initialize the model.
 
     Example
     -------
@@ -32,14 +34,17 @@ class LaSVM(BaseKernelMethod):
     pos_samples = x[:2]
     neg_samples = x[2:4]
 
-    lasvm = LaSVM()
-    lasvm.initialize(pos_samples, neg_samples)
-    lasvm.fit(x, y, finalize=True)
+    lasvm = LaSVM(pos_samples, neg_samples)
+    lasvm.fit(x, y)
 
-    (lasvm.predict(x) == y).mean()  # 0.875
+    lasvm.score(x, y)  # 0.875
 
     Parameters
     ----------
+    pos_samples : numpy array
+        positive samples, shape (n_vectors, n_features)
+    neg_samples : numpy array
+        negative samples, shape (n_vectors, n_features)
     c : float, default 1
         regularization parameter
     kernel : {'rbf', 'linear', 'poly'}, default 'rbf'
@@ -97,41 +102,29 @@ class LaSVM(BaseKernelMethod):
         upper bounds, shape (n_vectors,)
     delta : float
         current delta
-    initialized : bool
-        whether the model has been initialized
 
     Methods
     -------
-    initialize(pos_samples, neg_samples)
-        initialize the model before fitting
-    fit(x, y)
-        fit the model on the training data
+    partial_fit(x, y)
+        partially fit the model on the training data
     finalize()
         finalize the training process after fitting is done
+    fit(x, y)
+        fit the model on the training data (equivalent to
+        partial_fit with subsequent finalize)
     predict(x)
         predict class labels of the test data
+    score(x, y)
+        calculate model accuracy on the given data
 
     Properties
     ----------
-    history : dict
-        training history of form::
-
-            {
-                'acc': [...],  # model accuracy on each incoming vector
-                'sv': [...]  # number of support vectors after each iteration
-            }
-
     coef_ : numpy array
         coefficients of the separating hyperplane in the linear
         kernel case, shape (n_vectors,)
-
     """
 
     ERR = 0.00001
-
-    class NotInitializedError(Exception):
-        def __init__(self):
-            super().__init__('model not initialized')
 
     class GradientPairNotFoundError(Exception):
         def __init__(self):
@@ -139,6 +132,8 @@ class LaSVM(BaseKernelMethod):
 
     def __init__(
             self,
+            pos_samples: np.ndarray,
+            neg_samples: np.ndarray,
             c: float = 1,
             kernel: str = 'rbf',
             gamma: Union[float, str] = 'scale',
@@ -160,65 +155,18 @@ class LaSVM(BaseKernelMethod):
         self.b = np.empty(shape=(0,))
 
         self.delta = None
-
         self.niter = niter
 
-        self.initialized = False
+        self._initialize(pos_samples, neg_samples)
 
-        self._history_pred = []
-        self._history_sv = []
-
-    def initialize(self, pos_samples: np.ndarray, neg_samples: np.ndarray) -> 'LaSVM':
-        """Initialize model by adding some positive and negative samples as
-        support vectors.
-
-        This is a mandatory step before fitting.
-
-        Parameters
-        ----------
-        pos_samples : numpy array
-            positive samples, shape (n_vectors, n_features)
-        neg_samples : numpy array
-            negative samples, shape (n_vectors, n_features)
-
-        Returns
-        -------
-        self
-        """
-
-        self._remove_all_support_vectors()
-
-        self._history_pred = []
-        self._history_sv = []
-
-        pos_samples = pos_samples.copy()
-        neg_samples = neg_samples.copy()
-
-        if self.gamma == 'scale':
-            self.gamma_ = self._scaled_gamma(np.vstack([pos_samples, neg_samples]))
-
-        self.support_vectors = np.empty(shape=(0, pos_samples.shape[1]))
-
-        self._add_support_vectors(pos_samples, y=np.ones(pos_samples.shape[0]), predict=False)
-        self._add_support_vectors(neg_samples, y=- np.ones(neg_samples.shape[0]), predict=False)
-
-        i, j = self._find_maximum_gradient_pair()
-        self.intercept = (self.gradient[i] + self.gradient[j]) / 2
-        self.delta = self.gradient[i] - self.gradient[j]
-
-        self.initialized = True
-
-        return self
-
-    def fit(
+    def partial_fit(
             self,
             x: np.ndarray,
             y: np.ndarray,
             verbose: bool = False,
             shuffle: bool = False,
-            finalize: bool = False,
     ) -> 'LaSVM':
-        """Fit model to the given data.
+        """Partially (incrementally) fit model to the given data.
 
         Array `x` must be 2-dimensional of shape (n_vectors, n_features).
         Array `y` must be 1-dimensional of shape (n_vectors,) and contain only
@@ -234,16 +182,11 @@ class LaSVM(BaseKernelMethod):
             shuffle data before fitting
         verbose : bool
             set verbosity
-        finalize : bool
-            perform finalizing step after fitting
 
         Returns
         -------
         self
         """
-
-        if not self.initialized:
-            raise self.NotInitializedError
 
         x = x.copy()
         y = self._prepare_targets(y)
@@ -260,13 +203,44 @@ class LaSVM(BaseKernelMethod):
             self._process(x=x0, y=y0)
             self._reprocess()
 
-            self._history_sv.append(self.support_vectors.shape[0])
+        return self
 
-        if finalize:
-            if verbose:
-                print('Finalizing')
+    def fit(
+            self,
+            x: np.ndarray,
+            y: np.ndarray,
+            verbose: bool = False,
+            shuffle: bool = False,
+    ) -> 'LaSVM':
+        """Fit model to the given data. Equivalent to partial_fit with
+        subsequent finalize.
 
-            self.finalize(verbose=verbose)
+        Array `x` must be 2-dimensional of shape (n_vectors, n_features).
+        Array `y` must be 1-dimensional of shape (n_vectors,) and contain only
+        class labels 0 or 1.
+
+        Parameters
+        ----------
+        x : numpy array
+            data, shape (n_vectors, n_features)
+        y : numpy array
+            class labels, shape (n_vectors,), valued 0 or 1
+        shuffle : bool
+            shuffle data before fitting
+        verbose : bool
+            set verbosity
+
+        Returns
+        -------
+        self
+        """
+
+        self.partial_fit(x, y, shuffle=shuffle, verbose=verbose)
+
+        if verbose:
+            print('Finalizing')
+
+        self.finalize(verbose=verbose)
 
         return self
 
@@ -294,8 +268,6 @@ class LaSVM(BaseKernelMethod):
         for _ in range(niter):
             self._reprocess()
 
-            self._history_sv.append(self.support_vectors.shape[0])
-
             if self.delta <= self.tol:
                 broke_loop = True
                 break
@@ -312,17 +284,45 @@ class LaSVM(BaseKernelMethod):
 
         return self
 
-    @property
-    def history(self) -> Dict[str, list]:
-        return {
-            'acc': cumulative_mean(self._history_pred),
-            'sv': self._history_sv,
-        }
-
     def __repr__(self):
         return 'LaSVM()'
 
-    def _add_support_vectors(self, x: np.ndarray, y: np.ndarray, predict: bool) -> None:
+    def _initialize(self, pos_samples: np.ndarray, neg_samples: np.ndarray) -> 'LaSVM':
+        """Initialize model by adding some positive and negative samples as
+        support vectors.
+
+        Parameters
+        ----------
+        pos_samples : numpy array
+            positive samples, shape (n_vectors, n_features)
+        neg_samples : numpy array
+            negative samples, shape (n_vectors, n_features)
+
+        Returns
+        -------
+        self
+        """
+
+        self._remove_all_support_vectors()
+
+        pos_samples = pos_samples.copy()
+        neg_samples = neg_samples.copy()
+
+        if self.gamma == 'scale':
+            self.gamma_ = self._scaled_gamma(np.vstack([pos_samples, neg_samples]))
+
+        self.support_vectors = np.empty(shape=(0, pos_samples.shape[1]))
+
+        self._add_support_vectors(pos_samples, y=np.ones(pos_samples.shape[0]))
+        self._add_support_vectors(neg_samples, y=- np.ones(neg_samples.shape[0]))
+
+        i, j = self._find_maximum_gradient_pair()
+        self.intercept = (self.gradient[i] + self.gradient[j]) / 2
+        self.delta = self.gradient[i] - self.gradient[j]
+
+        return self
+
+    def _add_support_vectors(self, x: np.ndarray, y: np.ndarray) -> None:
         """Add support vectors with zero coefficients.
 
         Parameters
@@ -331,8 +331,6 @@ class LaSVM(BaseKernelMethod):
             data, shape (n_vectors, n_features)
         y : numpy array
             class labels, shape (n_vectors, n_features)
-        predict : bool
-            try predicting on input
         """
 
         n_vectors = x.shape[0]
@@ -346,17 +344,7 @@ class LaSVM(BaseKernelMethod):
         self.kernel_mx = np.vstack([self.kernel_mx, new_kernel_values[:, :-n_vectors]])
         self.kernel_mx = np.hstack([self.kernel_mx, new_kernel_values.T])
 
-        dot = new_kernel_values.dot(self.alpha)
-
-        if predict:
-            pred = dot + self.intercept
-            pred[pred > 0] = 1
-            pred[pred <= 0] = -1
-            pred = (pred == y).astype(int).tolist()
-
-            self._history_pred.extend(pred)
-
-        gradient = y - dot
+        gradient = y - new_kernel_values.dot(self.alpha)
         self.gradient = np.append(self.gradient, gradient)
 
         a = y * self.c
@@ -459,7 +447,7 @@ class LaSVM(BaseKernelMethod):
         if (((self.support_vectors - x) ** 2).sum(axis=1) ** 0.5 < self.ERR).any():
             return
 
-        self._add_support_vectors(x, y, predict=True)
+        self._add_support_vectors(x, y)
 
         if y[0] == 1:
             i = self.support_vectors.shape[0] - 1

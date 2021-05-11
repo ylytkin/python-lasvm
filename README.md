@@ -16,26 +16,27 @@ import numpy as np
 
 from lasvm import LaSVM
 
-x = np.array([[ 1.84, -1.7 ],
-              [-0.52,  0.27],
+x = np.array([[1.84, -1.7],
+              [-0.52, 0.27],
               [-0.23, -0.26],
-              [-1.42,  0.17],
-              [ 1.  , -1.  ],
-              [ 0.01,  1.71],
-              [-0.53,  1.7 ],
-              [-0.27,  0.06]])
+              [-1.42, 0.17],
+              [1., -1.],
+              [0.01, 1.71],
+              [-0.53, 1.7],
+              [-0.27, 0.06]])
 
 y = np.array([1, 1, 0, 0, 1, 0, 0, 1])
 
 pos_samples = x[:2]
 neg_samples = x[2:4]
 
-lasvm = LaSVM()
-lasvm.initialize(pos_samples, neg_samples)  # some initial support vectors are required
-lasvm.fit(x, y, finalize=True)
+lasvm = LaSVM(pos_samples, neg_samples)  # some initial support vectors are required
+lasvm.fit(x, y)
 
-(lasvm.predict(x) == y).mean()  # 0.875
+lasvm.score(x, y)  # 0.875
 ```
+
+Also implemented are the really simple but elegant Kernel Perceptron and Budget Kernel Perceptron models (see `lasvm/kernel_perceptron.py`).
 
 ***
 
